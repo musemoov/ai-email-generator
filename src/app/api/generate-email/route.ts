@@ -2,14 +2,27 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from '@supabase/supabase-js';
 
+// 로깅 유틸리티 함수 추가
+const logInfo = (message: string, data?: unknown) => {
+  if (process.env.NODE_ENV !== "production") {
+    console.log(message, data);
+  }
+};
+
+const logError = (message: string, error?: unknown) => {
+  if (process.env.NODE_ENV !== "production") {
+    console.error(message, error);
+  }
+};
+
 // OpenAI API 키 로깅 (개발 환경에서만)
 if (process.env.NODE_ENV === "development") {
   if (process.env.OPENAI_API_KEY) {
     const maskedKey = `${process.env.OPENAI_API_KEY.substring(0, 3)}...${process.env.OPENAI_API_KEY.substring(process.env.OPENAI_API_KEY.length - 4)}`;
-    console.log(`OPENAI_API_KEY loaded: ${maskedKey}`);
+    logInfo(`OPENAI_API_KEY loaded: ${maskedKey}`);
   } else {
-    console.error("OPENAI_API_KEY is not defined in environment variables.");
-    console.log("Please check your .env.local file at the project root.");
+    logError("OPENAI_API_KEY is not defined in environment variables.");
+    logInfo("Please check your .env.local file at the project root.");
   }
 }
 
@@ -63,7 +76,7 @@ export async function POST(req: NextRequest) {
   try {
     // 1. API 키 확인
     if (!process.env.OPENAI_API_KEY) {
-      console.error("OPENAI_API_KEY is not defined in environment variables.");
+      logError("OPENAI_API_KEY is not defined in environment variables.");
       return NextResponse.json(
         { 
           error: "OpenAI API key is not configured",
@@ -119,7 +132,7 @@ export async function POST(req: NextRequest) {
       
       // 6. 토큰 사용량 로깅
       if (completion.usage) {
-        console.log("Token usage:", {
+        logInfo("Token usage:", {
           promptTokens: completion.usage.prompt_tokens,
           completionTokens: completion.usage.completion_tokens,
           totalTokens: completion.usage.total_tokens
@@ -137,7 +150,7 @@ export async function POST(req: NextRequest) {
         
         if (userError || !user) {
           message = "User not authenticated";
-          console.log("❌ User not authenticated, skipping email save");
+          logInfo("❌ User not authenticated, skipping email save");
           
           return NextResponse.json({ 
             email: generatedContent, 
@@ -148,7 +161,11 @@ export async function POST(req: NextRequest) {
           });
         }
         
-        console.log("✅ User authenticated:", user.email);
+        // 민감 정보 마스킹 처리하여 로깅
+        if (user?.email) {
+          const maskedEmail = user.email.replace(/(.{2})(.*)(@.*)/, '$1***$3');
+          logInfo(`✅ User authenticated: ${maskedEmail}`);
+        }
         
         // 7.2 사용자 크레딧 확인
         const { data: creditData, error: creditError } = await authenticatedSupabase
@@ -158,7 +175,7 @@ export async function POST(req: NextRequest) {
           .single();
           
         if (creditError) {
-          console.error("Error checking user credits:", creditError?.message || creditError);
+          logError("Error checking user credits:", creditError?.message || creditError);
           message = "Failed to check user credits";
           return NextResponse.json({ 
             email: generatedContent, 
@@ -172,7 +189,11 @@ export async function POST(req: NextRequest) {
         // 7.3 크레딧 부족 확인
         if (!creditData || creditData.credits <= 0) {
           message = "You have used all your credits";
-          console.log("❌ User has no remaining credits:", user.email);
+          // 마스킹 처리
+          if (user?.email) {
+            const maskedEmail = user.email.replace(/(.{2})(.*)(@.*)/, '$1***$3');
+            logInfo(`❌ User has no remaining credits: ${maskedEmail}`);
+          }
           return NextResponse.json({ 
             error: "No remaining credits",
             message: "You have used all your credits"
@@ -186,10 +207,10 @@ export async function POST(req: NextRequest) {
           .eq("user_id", user.id);
           
         if (updateError) {
-          console.error("Error updating user credits:", updateError?.message || updateError);
+          logError("Error updating user credits:", updateError?.message || updateError);
           message = "Failed to update user credits";
         } else {
-          console.log(`✅ User credit updated: ${creditData.credits} -> ${creditData.credits - 1}`);
+          logInfo(`✅ User credit updated: ${creditData.credits} -> ${creditData.credits - 1}`);
           creditsRemaining = creditData.credits - 1;
         }
         
@@ -203,11 +224,11 @@ export async function POST(req: NextRequest) {
           });
         
         if (insertError) {
-          console.error("Error saving email to Supabase:", insertError?.message || insertError);
+          logError("Error saving email to Supabase:", insertError?.message || insertError);
           message = "Failed to save email";
         } else {
           saved = true;
-          console.log("Email saved to Supabase successfully");
+          logInfo("Email saved to Supabase successfully");
         }
 
         // 7.6 응답 반환
@@ -222,7 +243,7 @@ export async function POST(req: NextRequest) {
         
       } catch (saveError) {
         // 저장 과정 오류 처리
-        console.error("Error during save to Supabase:", saveError instanceof Error ? saveError.message : saveError);
+        logError("Error during save to Supabase:", saveError instanceof Error ? saveError.message : saveError);
         message = "Error processing save request";
         
         return NextResponse.json({ 
@@ -237,7 +258,7 @@ export async function POST(req: NextRequest) {
       if (typeof openAIError === 'object' && openAIError !== null && 'status' in openAIError) {
         const err = openAIError as OpenAIError;
         if (err.status === 401 || err.message?.includes("API key")) {
-          console.error("OpenAI API Key Authentication Error:", {
+          logError("OpenAI API Key Authentication Error:", {
             message: err.message,
             status: err.status,
           });
@@ -250,7 +271,7 @@ export async function POST(req: NextRequest) {
           );
         }
         // 기타 상세한 오류 로깅
-        console.error("OpenAI API Error:", {
+        logError("OpenAI API Error:", {
           message: err.message,
           status: err.status,
           code: err.code,
@@ -282,7 +303,7 @@ export async function POST(req: NextRequest) {
     }
   } catch (generalError: unknown) {
     // 9. 일반적인 요청 처리 오류
-    console.error("❌ Email generation or saving failed:", generalError);
+    logError("❌ Email generation or saving failed:", generalError);
     
     return NextResponse.json(
       { 
